@@ -14,7 +14,7 @@ namespace NetworkHw2Server
         static void Main(string[] args)
         {
             Console.Title = "Server";
-            IPAddress iPAddress = IPAddress.Parse("192.168.0.239");
+            IPAddress iPAddress = IPAddress.Parse("192.168.1.71");
             int port = 44000;
             var ep = new IPEndPoint(iPAddress, port);
             _listener = new TcpListener(ep);
@@ -36,42 +36,6 @@ namespace NetworkHw2Server
                     SendMsgToAll(msg);
             }
         }
-
-        private static void SendOnlineUsers()
-        {
-            List<AppClient> appClients = [];
-            var usersState = GetUsersState();
-            foreach (var client in _tcpClients)
-            {
-                int state = 0;
-                usersState.TryGetValue(client, out state);
-                if (state == 1)
-                {
-                    appClients.Add(new AppClient
-                    {
-                        Name = _clientsByNames!.GetValueOrDefault(client.Client.RemoteEndPoint!.ToString()),
-                        RemoteEndPoint = client.Client.RemoteEndPoint.ToString()
-                    });
-                }
-                else
-                    continue;
-            }
-            var clientsJson = JsonSerializer.Serialize(appClients);
-            BinaryWriter bw = null!;
-            var filteredTcpClients = new List<TcpClient>();
-            foreach (var client in appClients)
-            {
-                filteredTcpClients.
-                    Add(_tcpClients.First(c => c.Client.RemoteEndPoint!.ToString() == client.RemoteEndPoint));
-            }
-            foreach (var client in filteredTcpClients)
-            {
-                var stream = client.GetStream();
-                bw = new BinaryWriter(stream);
-                bw.Write(clientsJson);
-            }
-        }
-
         private static void AcceptClients()
         {
             while (true)
@@ -81,12 +45,28 @@ namespace NetworkHw2Server
                 Task.Run(() => ClientHandler(client));
             }
         }
+        private static void SendMsgToAll(string msg)
+        {
+            foreach (var client in _tcpClients)
+            {
+                try
+                {
+                    var bw = new BinaryWriter(client.GetStream());
+                    bw.Write(msg);
+                }
+                catch
+                {
+                }
+            }
+        }
+
 
 
         private static void ClientHandler(TcpClient tcpClient)
         {
             try
             {
+                SendOnlineUsers(tcpClient);
                 var stream = tcpClient.GetStream();
                 var br = new BinaryReader(stream);
                 string name = br.ReadString();
@@ -95,15 +75,35 @@ namespace NetworkHw2Server
                 AppClient myClient = new AppClient
                 {
                     Name = name,
-                    RemoteEndPoint = tcpClient.Client.RemoteEndPoint.ToString()
+                    ServerSideRemoteEndPoint = tcpClient.Client.RemoteEndPoint.ToString()
                 };
                 while (true)
                 {
                     string msg = br.ReadString();
 
-                    Console.Write($"Client {name}: ", Console.ForegroundColor = ConsoleColor.Yellow);
-                    Console.ResetColor();
-                    Console.WriteLine(msg);
+                    if (Helper.IsJson(msg))
+                    {
+                        var receivedData = JsonSerializer.Deserialize<string>(msg)!.Split("\n");
+                        var messageToSend = receivedData[0];
+                        var ep = receivedData[1];
+                        StartChat(messageToSend, ep);
+                    }
+                    else if (!msg.StartsWith('_'))
+                    {
+                        Console.Write($"Client {name}: ", Console.ForegroundColor = ConsoleColor.Yellow);
+                        Console.ResetColor();
+                        Console.WriteLine(msg);
+                    }
+                    switch (msg)
+                    {
+                        case "_who":
+                            {
+                                SendOnlineUsers(tcpClient);
+                                break;
+                            }
+                        default:
+                            break;
+                    }
                 }
 
             }
@@ -118,18 +118,55 @@ namespace NetworkHw2Server
 
         }
 
-        private static void SendMsgToAll(string msg)
+        private static void StartChat(string msg, string remoteEP)
         {
+            var tcpClient = _tcpClients.FirstOrDefault(c => c.Client.RemoteEndPoint!.ToString() == remoteEP);
+            var stream = tcpClient.GetStream();
+            var bw = new BinaryWriter(stream);
+            bw.Write(msg);
+            bw.Flush();
+        }
+
+        private static void SendOnlineUsers(TcpClient tcpClient = null!)
+        {
+            List<AppClient> appClients = [];
+            var usersState = GetUsersState();
             foreach (var client in _tcpClients)
             {
-                try
+                int state = 0;
+                usersState.TryGetValue(client, out state);
+                if (state == 1)
                 {
-                    var bw = new BinaryWriter(client.GetStream());
-                    bw.Write(msg);
+                    appClients.Add(new AppClient
+                    {
+                        Name = _clientsByNames!.GetValueOrDefault(client.Client.RemoteEndPoint!.ToString()),
+                        ServerSideRemoteEndPoint = client.Client.RemoteEndPoint.ToString()
+                    });
                 }
-                catch
-                {
-                }
+                else
+                    continue;
+            }
+            var clientsJson = JsonSerializer.Serialize(appClients);
+            BinaryWriter bw = null!;
+            var filteredTcpClients = new List<TcpClient>();
+            foreach (var client in appClients)
+            {
+                filteredTcpClients.
+                    Add(_tcpClients.First(c => c.Client.RemoteEndPoint!.ToString() == client.ServerSideRemoteEndPoint));
+            }
+            if (tcpClient != null)
+            {
+                var stream = tcpClient.GetStream();
+                bw = new BinaryWriter(stream);
+                bw.Write(clientsJson);
+                return;
+            }
+
+            foreach (var client in filteredTcpClients)
+            {
+                var stream = client.GetStream();
+                bw = new BinaryWriter(stream);
+                bw.Write(clientsJson);
             }
         }
         private static void PrintOnlineUsers()
@@ -157,6 +194,9 @@ namespace NetworkHw2Server
                     Console.ResetColor();
                 }
             }
+
+
+
         }
         private static Dictionary<TcpClient, int> GetUsersState()
         {
